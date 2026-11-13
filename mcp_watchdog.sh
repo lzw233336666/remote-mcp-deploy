@@ -68,8 +68,12 @@ while true; do
         if [ "$TUNNEL_NEED_RESTART" -eq 1 ]; then
             pkill -f "devtunnel host $DEVTUNNEL_NAME" 2>/dev/null || true
             sleep 2
+            # 轮转/清空日志，避免上一轮的 'Invalid channel ID' 在下一次循环被重复匹配导致死循环重启
+            tail -n 100 "$DEVTUNNEL_LOG" > "$DEVTUNNEL_LOG.old" 2>/dev/null || true
+            > "$DEVTUNNEL_LOG"
             nohup devtunnel host "$DEVTUNNEL_NAME" </dev/null >> "$DEVTUNNEL_LOG" 2>&1 &
             sleep 2
+            LAST_RECYCLE=$(date +%s)
             log "[✔] DevTunnel 隧道重启完成"
         fi
     fi
