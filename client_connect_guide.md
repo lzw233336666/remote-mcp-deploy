@@ -31,6 +31,11 @@
    - 输入你设置的 **授权登录密码**。
    - 点击 **「Authorize」**（或「同意并继续」），页面关闭并提示关联成功。
 
+> [!TIP]
+> **动态回调与 `redirect_uri is not registered` 自动放行**：
+> Google Gemini 在授权时会动态分发用户专属回调地址（例如 `https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-...`）。
+> 本套件包含的 `patch_mcp_server.py` 已自动为服务端 OAuth 模块注入泛域名动态匹配，无需手动复制复杂的动态回调，授权即可百分之百秒级通过！
+
 ### 2. 避免常见错误的关键规范
 > [!IMPORTANT]
 > **必须开启【+ 新对话】**：

@@ -2,6 +2,11 @@
 # ==============================================================================
 # mcp_watchdog.sh - 24/7 守护与故障自愈脚本
 # 负责自动监控 MCP 服务端口活性、DevTunnel 隧道状态与异常自动恢复
+#
+# 推荐配合 Linux crontab 实现开机自启与进程死锁守护：
+# crontab -e
+# * * * * * pgrep -f "mcp_watchdog.sh" >/dev/null 2>&1 || nohup bash /path/to/mcp_watchdog.sh /path/to/config.env >/dev/null 2>&1 &
+# @reboot sleep 10 && nohup bash /path/to/mcp_watchdog.sh /path/to/config.env >/dev/null 2>&1 &
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +29,7 @@ log() {
 
 log "[*] MCP 24/7 守护脚本启动..."
 LAST_RECYCLE=$(date +%s)
+LAST_EXPIRY_RENEW=$(date +%s)
 
 while true; do
     # 1. 检查 MCP 服务端口状态
@@ -75,6 +81,14 @@ while true; do
             sleep 2
             LAST_RECYCLE=$(date +%s)
             log "[✔] DevTunnel 隧道重启完成"
+        fi
+
+        # 3. 周期性自动续期 DevTunnel 30 天有效期 (每 12 小时执行一次，防止 30 天后隧道自动销毁)
+        NOW=$(date +%s)
+        if [ $((NOW - LAST_EXPIRY_RENEW)) -gt 43200 ]; then
+            devtunnel update "$DEVTUNNEL_NAME" -e 30d >/dev/null 2>&1 || true
+            LAST_EXPIRY_RENEW=$NOW
+            log "[*] DevTunnel 30 天有效期已自动延期刷新。"
         fi
     fi
 

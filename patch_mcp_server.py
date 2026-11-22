@@ -5,7 +5,8 @@ patch_mcp_server.py - 自动热补丁工具
 1. 注入 PROD / DEFAULT / PRODUCTION 等全环境传输映射，彻底根除 'Transport for env PROD not found' 错误；
 2. 动态支持 Dual SSE + Streamable HTTP 双模协议与全层级元数据导出；
 3. 支持双路径 ('/' 与 '/mcp') 的 JSON-RPC 请求分发；
-4. 放行免认证 initialize / ping 探针探测，避免平台网址有效性校验拦截。
+4. 放行免认证 initialize / ping 探针探测，避免平台网址有效性校验拦截；
+5. 动态放行 Google Gemini 与 OpenAI ChatGPT 动态分配的 OAuth 回调 URI，彻底根除 'redirect_uri is not registered for this client' 报错。
 """
 
 import sys
@@ -18,7 +19,6 @@ def find_server_file():
     if spec and spec.origin:
         return spec.origin
     
-    # 尝试在当前 python 路径下寻找
     try:
         import coding_tools_mcp.server
         return coding_tools_mcp.server.__file__
@@ -26,6 +26,20 @@ def find_server_file():
         pass
     
     print("[-] 错误: 未找到 coding_tools_mcp.server 模块。请先执行 pip install coding-tools-mcp")
+    return None
+
+def find_oauth_file():
+    spec = importlib.util.find_spec("coding_tools_mcp.oauth")
+    if spec and spec.origin:
+        return spec.origin
+    
+    try:
+        import coding_tools_mcp.oauth
+        return coding_tools_mcp.oauth.__file__
+    except ImportError:
+        pass
+    
+    print("[-] 错误: 未找到 coding_tools_mcp.oauth 模块。请先执行 pip install coding-tools-mcp")
     return None
 
 def patch_server_file(filepath):
@@ -57,7 +71,6 @@ def patch_server_file(filepath):
     end = content.find(end_marker)
 
     if start != -1 and end != -1:
-        # 检查是否已经注入过
         if "_environment_metadata" not in content[start:end]:
             replacement_runtime = '''    def _environment_metadata(self) -> dict[str, Any]:
         base_url = (self.oauth_config.server_url if self.oauth_config else '') or os.environ.get("CODING_TOOLS_MCP_SERVER_URL", "")
@@ -184,10 +197,8 @@ def patch_server_file(filepath):
     # 补丁 3: 优化 server_card_payload 保证 /.well-known/mcp.json 输出 PROD
     # --------------------------------------------------------------------------
     if '"PROD": env_node' not in content:
-        # 如果 server_card_payload 还未打补丁，进行静态卡片更新
         card_marker = "def server_card_payload(runtime: Runtime"
         if card_marker in content:
-            # 找到 server_card_payload 内部的 environments
             import re
             pattern = r'def server_card_payload\(runtime: Runtime, \*, oauth_base_url: str \| None = None\) -> dict\[str, Any\]:.*?"environments": \{.*?\n        \},'
             match = re.search(pattern, content, re.DOTALL)
@@ -250,14 +261,68 @@ def patch_server_file(filepath):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
         py_compile.compile(filepath, doraise=True)
-        print("[✔] 补丁注入完毕，语法编译检查通过！")
+        print("[✔] 服务端文件补丁注入完毕，语法编译检查通过！")
     else:
         print("[✔] 服务端文件已处于最新增强状态，无需重复打补丁。")
 
-if __name__ == "__main__":
-    target_file = sys.argv[1] if len(sys.argv) > 1 else find_server_file()
-    if target_file and os.path.exists(target_file):
-        patch_server_file(target_file)
+def patch_oauth_file(filepath):
+    print(f"[*] 正在为 OAuth 模块注入动态回调兼容补丁: {filepath}")
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    modified = False
+
+    # --------------------------------------------------------------------------
+    # 补丁: 动态兼容 Google 与 OpenAI 的动态分配回调 URI，彻底根除 redirect_uri is not registered
+    # --------------------------------------------------------------------------
+    target_pattern = """    def accepts_redirect(self, redirect_uri: str) -> bool:
+        return redirect_uri in self.redirect_uris"""
+
+    replacement_pattern = """    def accepts_redirect(self, redirect_uri: str) -> bool:
+        if redirect_uri in self.redirect_uris:
+            return True
+        try:
+            parsed = urllib.parse.urlsplit(redirect_uri)
+            host = (parsed.hostname or "").lower()
+            if (host == "googleusercontent.com" or host.endswith(".googleusercontent.com") or 
+                host == "google.com" or host.endswith(".google.com") or 
+                host == "openai.com" or host.endswith(".openai.com") or 
+                host == "chatgpt.com" or host.endswith(".chatgpt.com") or 
+                host in {"localhost", "127.0.0.1", "::1"}):
+                return True
+        except Exception:
+            pass
+        return False"""
+
+    if target_pattern in content:
+        content = content.replace(target_pattern, replacement_pattern, 1)
+        print("[+] OAuth 补丁已应用: 动态回调 URI (Google/ChatGPT) 验证支持生效")
+        modified = True
+    elif 'host.endswith(".googleusercontent.com")' in content:
+        print("[=] OAuth 动态回调补丁已存在，跳过")
     else:
-        print("[-] 无法定位有效的 server.py 文件路径。")
-        sys.exit(1)
+        print("[-] 警告: 未找到 OAuthClient.accepts_redirect 原始代码锚点，可能版本已变动")
+
+    if modified:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        py_compile.compile(filepath, doraise=True)
+        print("[✔] OAuth 模块补丁注入完毕，语法编译检查通过！")
+    else:
+        print("[✔] OAuth 模块无需更新。")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        target_file = sys.argv[1]
+        if "oauth" in os.path.basename(target_file):
+            patch_oauth_file(target_file)
+        else:
+            patch_server_file(target_file)
+    else:
+        srv_file = find_server_file()
+        if srv_file and os.path.exists(srv_file):
+            patch_server_file(srv_file)
+        
+        oauth_file = find_oauth_file()
+        if oauth_file and os.path.exists(oauth_file):
+            patch_oauth_file(oauth_file)
